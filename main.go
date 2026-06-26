@@ -9,6 +9,8 @@ import (
 
 func main() {
 	cfg := config.Load()
+	log.Printf("server port: %s", cfg.ServerPort)
+	log.Printf("database target: %s", cfg.DatabaseTarget())
 
 	application, err := app.New(cfg)
 	if err != nil {
