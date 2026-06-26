@@ -8,6 +8,7 @@ import (
 	"app/config"
 	"app/internal/handlers"
 	"app/internal/infrastructure"
+	"app/internal/middleware"
 	"app/internal/repositories"
 	"app/internal/routes"
 	"app/internal/services"
@@ -19,7 +20,11 @@ type App struct {
 }
 
 func New(cfg *config.Config) (*App, error) {
-	db, err := infrastructure.NewDatabase(cfg.DatabaseDSN())
+	db, err := infrastructure.NewDatabase(cfg.DatabaseDSN(), infrastructure.PoolConfig{
+		MaxOpenConns:    cfg.DBMaxOpenConns,
+		MaxIdleConns:    cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
@@ -29,6 +34,7 @@ func New(cfg *config.Config) (*App, error) {
 	productHandler := handlers.NewProductHandler(productService)
 
 	router := gin.Default()
+	router.Use(middleware.Timeout(cfg.RequestTimeout))
 	routes.Register(router, productHandler)
 
 	return &App{

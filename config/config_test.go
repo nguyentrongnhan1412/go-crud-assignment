@@ -2,21 +2,23 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"app/config"
 )
 
 func TestLoad_UsesDefaults(t *testing.T) {
-	t.Setenv("PORT", "")
 	t.Setenv("SERVER_PORT", "")
-	t.Setenv("DATABASE_URL", "")
-	t.Setenv("POSTGRES_URL", "")
 	t.Setenv("DB_HOST", "")
 	t.Setenv("DB_PORT", "")
 	t.Setenv("DB_USER", "")
 	t.Setenv("DB_PASSWORD", "")
 	t.Setenv("DB_NAME", "")
 	t.Setenv("DB_SSLMODE", "")
+	t.Setenv("REQUEST_TIMEOUT", "")
+	t.Setenv("DB_MAX_OPEN_CONNS", "")
+	t.Setenv("DB_MAX_IDLE_CONNS", "")
+	t.Setenv("DB_CONN_MAX_LIFETIME", "")
 
 	cfg := config.Load()
 
@@ -29,13 +31,22 @@ func TestLoad_UsesDefaults(t *testing.T) {
 	if cfg.DBName != "product_management" {
 		t.Fatalf("expected default db name product_management, got %s", cfg.DBName)
 	}
+	if cfg.RequestTimeout != 30*time.Second {
+		t.Fatalf("expected default request timeout 30s, got %s", cfg.RequestTimeout)
+	}
+	if cfg.DBMaxOpenConns != 25 {
+		t.Fatalf("expected default max open conns 25, got %d", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 5 {
+		t.Fatalf("expected default max idle conns 5, got %d", cfg.DBMaxIdleConns)
+	}
+	if cfg.DBConnMaxLifetime != 5*time.Minute {
+		t.Fatalf("expected default conn max lifetime 5m, got %s", cfg.DBConnMaxLifetime)
+	}
 }
 
 func TestLoad_UsesEnvironmentVariables(t *testing.T) {
-	t.Setenv("PORT", "")
 	t.Setenv("SERVER_PORT", "9090")
-	t.Setenv("DATABASE_URL", "")
-	t.Setenv("POSTGRES_URL", "")
 	t.Setenv("DB_HOST", "db")
 	t.Setenv("DB_PORT", "5433")
 	t.Setenv("DB_USER", "appuser")
@@ -56,47 +67,61 @@ func TestLoad_UsesEnvironmentVariables(t *testing.T) {
 	}
 }
 
-func TestLoad_PrefersPORTOverServerPort(t *testing.T) {
-	t.Setenv("PORT", "3000")
-	t.Setenv("SERVER_PORT", "9090")
+func TestLoad_UsesTimeoutAndPoolSettings(t *testing.T) {
+	t.Setenv("REQUEST_TIMEOUT", "15s")
+	t.Setenv("DB_MAX_OPEN_CONNS", "40")
+	t.Setenv("DB_MAX_IDLE_CONNS", "10")
+	t.Setenv("DB_CONN_MAX_LIFETIME", "10m")
 
 	cfg := config.Load()
 
-	if cfg.ServerPort != "3000" {
-		t.Fatalf("expected port 3000 from PORT, got %s", cfg.ServerPort)
+	if cfg.RequestTimeout != 15*time.Second {
+		t.Fatalf("expected request timeout 15s, got %s", cfg.RequestTimeout)
+	}
+	if cfg.DBMaxOpenConns != 40 {
+		t.Fatalf("expected max open conns 40, got %d", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 10 {
+		t.Fatalf("expected max idle conns 10, got %d", cfg.DBMaxIdleConns)
+	}
+	if cfg.DBConnMaxLifetime != 10*time.Minute {
+		t.Fatalf("expected conn max lifetime 10m, got %s", cfg.DBConnMaxLifetime)
 	}
 }
 
-func TestLoad_UsesDatabaseURL(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://user:pass@ep-example.neon.tech:5432/product_management?sslmode=require")
-	t.Setenv("POSTGRES_URL", "")
-	t.Setenv("DB_HOST", "localhost")
+func TestLoad_ClampsIdleConnsToOpenConns(t *testing.T) {
+	t.Setenv("DB_MAX_OPEN_CONNS", "5")
+	t.Setenv("DB_MAX_IDLE_CONNS", "20")
 
 	cfg := config.Load()
 
-	if cfg.DatabaseURL == "" {
-		t.Fatal("expected DATABASE_URL to be set")
+	if cfg.DBMaxOpenConns != 5 {
+		t.Fatalf("expected max open conns 5, got %d", cfg.DBMaxOpenConns)
 	}
-	if cfg.DatabaseDSN() != cfg.DatabaseURL {
-		t.Fatalf("expected DSN to use DATABASE_URL, got %q", cfg.DatabaseDSN())
-	}
-	if cfg.DatabaseTarget() != "DATABASE_URL (or POSTGRES_URL)" {
-		t.Fatalf("unexpected database target: %s", cfg.DatabaseTarget())
+	if cfg.DBMaxIdleConns != 5 {
+		t.Fatalf("expected max idle conns clamped to 5, got %d", cfg.DBMaxIdleConns)
 	}
 }
 
-func TestLoad_UsesPostgresURLWhenDatabaseURLMissing(t *testing.T) {
-	t.Setenv("DATABASE_URL", "")
-	t.Setenv("POSTGRES_URL", "postgres://user:pass@db.example.com:5432/product_management?sslmode=require")
+func TestLoad_IgnoresInvalidNumericAndDurationValues(t *testing.T) {
+	t.Setenv("REQUEST_TIMEOUT", "not-a-duration")
+	t.Setenv("DB_MAX_OPEN_CONNS", "abc")
+	t.Setenv("DB_MAX_IDLE_CONNS", "0")
+	t.Setenv("DB_CONN_MAX_LIFETIME", "-1m")
 
 	cfg := config.Load()
 
-	expected := "postgres://user:pass@db.example.com:5432/product_management?sslmode=require"
-	if cfg.DatabaseURL != expected {
-		t.Fatalf("expected POSTGRES_URL to be used, got %q", cfg.DatabaseURL)
+	if cfg.RequestTimeout != 30*time.Second {
+		t.Fatalf("expected fallback request timeout 30s, got %s", cfg.RequestTimeout)
 	}
-	if cfg.DatabaseDSN() != expected {
-		t.Fatalf("expected DSN from POSTGRES_URL, got %q", cfg.DatabaseDSN())
+	if cfg.DBMaxOpenConns != 25 {
+		t.Fatalf("expected fallback max open conns 25, got %d", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 5 {
+		t.Fatalf("expected fallback max idle conns 5, got %d", cfg.DBMaxIdleConns)
+	}
+	if cfg.DBConnMaxLifetime != 5*time.Minute {
+		t.Fatalf("expected fallback conn max lifetime 5m, got %s", cfg.DBConnMaxLifetime)
 	}
 }
 

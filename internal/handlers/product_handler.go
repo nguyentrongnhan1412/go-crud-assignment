@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -39,6 +40,9 @@ func (h *ProductHandler) GetAll(c *gin.Context) {
 	keyword := c.Query("keyword")
 	products, err := h.service.GetAll(c.Request.Context(), keyword)
 	if err != nil {
+		if respondIfTimeout(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to fetch products"})
 		return
 	}
@@ -109,7 +113,19 @@ func parseProductID(c *gin.Context) (int, error) {
 	return id, nil
 }
 
+func respondIfTimeout(c *gin.Context, err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.JSON(http.StatusGatewayTimeout, gin.H{"message": "request timeout"})
+		return true
+	}
+	return false
+}
+
 func handleServiceError(c *gin.Context, err error) {
+	if respondIfTimeout(c, err) {
+		return
+	}
+
 	var validationErr *services.ValidationError
 	if errors.As(err, &validationErr) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": validationErr.Message})

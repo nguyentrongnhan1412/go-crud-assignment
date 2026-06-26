@@ -227,6 +227,25 @@ func TestProductHandler_Delete_Success(t *testing.T) {
 	assertMessage(t, rec, http.StatusOK, "product deleted successfully")
 }
 
+func TestProductHandler_GetAll_RequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	service := &mockProductService{
+		getAllFn: func(ctx context.Context, keyword string) ([]models.Product, error) {
+			return nil, context.DeadlineExceeded
+		},
+	}
+	handler := handlers.NewProductHandler(service)
+	router := setupRouter(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/products", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	assertMessage(t, rec, http.StatusGatewayTimeout, "request timeout")
+}
+
 func TestProductHandler_Update_InternalServerError(t *testing.T) {
 	t.Parallel()
 

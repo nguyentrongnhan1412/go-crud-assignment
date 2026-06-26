@@ -17,6 +17,7 @@ A RESTful API for managing products in storage, built with Go, Gin, and PostgreS
 │   └── config_test.go
 ├── internal/
 │   ├── app/                        # Application bootstrap and wiring
+│   ├── middleware/                 # HTTP middleware (request timeout)
 │   ├── routes/                     # HTTP route definitions
 │   ├── handlers/                   # HTTP request handlers
 │   │   └── product_service.go      # Handler-layer service interface
@@ -24,23 +25,40 @@ A RESTful API for managing products in storage, built with Go, Gin, and PostgreS
 │   │   └── product_repository.go   # Service-layer repository interface
 │   ├── repositories/               # PostgreSQL data access
 │   ├── models/                     # Domain models and DTOs
-│   └── infrastructure/             # Database connection setup
+│   └── infrastructure/             # Database connection pool setup
 ├── migrations/                     # SQL schema and seed data
 ├── main.go                         # Entry point
 ├── Dockerfile                      # Multi-stage production image
-└── docker-compose.yml              # Local and deployment orchestration
+├── docker-compose.yml              # Local and deployment orchestration
+└── .env.example                    # Environment variable reference
 ```
 
 ## Architecture
 
 The application is wired in `internal/app/app.go`:
 
-1. **Infrastructure** – opens a PostgreSQL connection pool with health ping
-2. **Repository** – executes SQL queries (CRUD + keyword search)
+1. **Infrastructure** – opens a PostgreSQL connection pool with configurable limits and a startup health ping
+2. **Repository** – executes SQL queries (CRUD + keyword search) using request-scoped context
 3. **Service** – validates input and delegates to the repository
 4. **Handler** – parses HTTP requests, maps errors to status codes, returns JSON
+5. **Middleware** – applies a per-request timeout via `context.WithTimeout` so slow queries do not hold goroutines indefinitely
 
 Each layer depends on an interface defined in the layer above, which keeps handlers and services testable with mocks.
+
+### Operational defaults
+
+| Concern | Default | Configuration |
+|---------|---------|---------------|
+| Request timeout | 30s | `REQUEST_TIMEOUT` |
+| Max open DB connections | 25 | `DB_MAX_OPEN_CONNS` |
+| Max idle DB connections | 5 | `DB_MAX_IDLE_CONNS` |
+| Connection max lifetime | 5m | `DB_CONN_MAX_LIFETIME` |
+
+Tune the connection pool against PostgreSQL `max_connections` and the number of API instances:
+
+```
+DB_MAX_OPEN_CONNS <= (max_connections - reserved) / number_of_api_instances
+```
 
 ## Prerequisites
 
@@ -81,6 +99,8 @@ docker compose down
 docker compose down -v
 ```
 
+When running with Docker Compose, `DB_HOST` is set to `db` automatically for the API container. Other settings such as `REQUEST_TIMEOUT` and pool variables use application defaults unless you add them to `.env`.
+
 ## Run Locally Without Docker
 
 ### 1. Start PostgreSQL
@@ -98,7 +118,7 @@ psql -U postgres -d product_management -f migrations/001_create_products_table.s
 cp .env.example .env
 ```
 
-Adjust values in `.env` if your PostgreSQL credentials differ. A `.env.development` file is also provided as a reference for development setups.
+Adjust values in `.env` if your PostgreSQL credentials or timeout/pool settings differ.
 
 ### 3. Run the Application
 
@@ -111,10 +131,16 @@ Server starts on port `8080` by default.
 
 ## Running Tests
 
-Unit tests cover the config, service, handler, and repository layers:
+Unit tests cover the config, middleware, service, handler, and repository layers:
 
 ```bash
 go test ./...
+```
+
+Verbose output:
+
+```bash
+go test -v ./...
 ```
 
 Repository tests use `go-sqlmock`; handler and service tests use mock implementations of the layer interfaces.
@@ -222,28 +248,35 @@ curl -X DELETE http://localhost:8080/products/1
 | 400    | `{ "message": "invalid product id" }`                 | Non-numeric or invalid ID      |
 | 404    | `{ "message": "product not found" }`                  | Product does not exist         |
 | 500    | `{ "message": "internal server error" }`              | Unexpected server error        |
+| 500    | `{ "message": "failed to fetch products" }`           | List query failed              |
+| 504    | `{ "message": "request timeout" }`                    | Request exceeded `REQUEST_TIMEOUT` |
 
 ## Deployment
 
 For production deployment with Docker Compose:
 
 1. Set secure values for `DB_USER`, `DB_PASSWORD`, and other variables in `.env`.
-2. Use `docker compose up --build -d` on your server.
-3. Place a reverse proxy (e.g. Nginx) in front of the API for HTTPS if needed.
-4. Consider using an external managed PostgreSQL service and updating `DB_HOST` accordingly.
+2. Tune `REQUEST_TIMEOUT` and `DB_MAX_OPEN_CONNS` for your workload and PostgreSQL capacity.
+3. Use `docker compose up --build -d` on your server.
+4. Place a reverse proxy (e.g. Nginx) in front of the API for HTTPS if needed.
+5. Consider using an external managed PostgreSQL service and updating `DB_HOST` accordingly.
 
 The production Docker image is built in two stages (Go 1.26 Alpine builder, Alpine 3.20 runtime) and runs as the `nobody` user.
 
 ## Environment Variables
 
-| Variable      | Default               | Description              |
-|---------------|-----------------------|--------------------------|
-| `SERVER_PORT` | `8080`                | HTTP server port         |
-| `DB_HOST`     | `localhost`           | PostgreSQL host          |
-| `DB_PORT`     | `5432`                | PostgreSQL port          |
-| `DB_USER`     | `postgres`            | Database user            |
-| `DB_PASSWORD` | `postgres`            | Database password        |
-| `DB_NAME`     | `product_management`  | Database name            |
-| `DB_SSLMODE`  | `disable`             | PostgreSQL SSL mode      |
+| Variable               | Default               | Description                                      |
+|------------------------|-----------------------|--------------------------------------------------|
+| `SERVER_PORT`          | `8080`                | HTTP server port                                 |
+| `REQUEST_TIMEOUT`      | `30s`                 | Per-request timeout (Go duration, e.g. `15s`, `1m`) |
+| `DB_HOST`              | `localhost`           | PostgreSQL host                                  |
+| `DB_PORT`              | `5432`                | PostgreSQL port                                  |
+| `DB_USER`              | `postgres`            | Database user                                    |
+| `DB_PASSWORD`          | `postgres`            | Database password                                |
+| `DB_NAME`              | `product_management`  | Database name                                    |
+| `DB_SSLMODE`           | `disable`             | PostgreSQL SSL mode                              |
+| `DB_MAX_OPEN_CONNS`    | `25`                  | Max concurrent connections per API instance      |
+| `DB_MAX_IDLE_CONNS`    | `5`                   | Idle connections kept in the pool (≤ open conns) |
+| `DB_CONN_MAX_LIFETIME` | `5m`                  | Max age before a connection is recycled        |
 
-When running with Docker Compose, `DB_HOST` is set to `db` automatically for the API container.
+See `.env.example` for a ready-to-copy template with tuning notes.

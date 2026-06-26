@@ -8,15 +8,39 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func NewDatabase(dsn string) (*sql.DB, error) {
+type PoolConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+}
+
+func NewDatabase(dsn string, pool PoolConfig) (*sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	maxOpenConns := pool.MaxOpenConns
+	if maxOpenConns <= 0 {
+		maxOpenConns = 25
+	}
+
+	maxIdleConns := pool.MaxIdleConns
+	if maxIdleConns <= 0 {
+		maxIdleConns = 5
+	}
+	if maxIdleConns > maxOpenConns {
+		maxIdleConns = maxOpenConns
+	}
+
+	connMaxLifetime := pool.ConnMaxLifetime
+	if connMaxLifetime <= 0 {
+		connMaxLifetime = 5 * time.Minute
+	}
+
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
+	db.SetConnMaxLifetime(connMaxLifetime)
 
 	if err := db.Ping(); err != nil {
 		db.Close()
