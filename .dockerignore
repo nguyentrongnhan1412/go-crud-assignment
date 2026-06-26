@@ -1,0 +1,9 @@
+.env
+.git
+*.md
+!README.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+server.exe
+server
